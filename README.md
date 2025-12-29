@@ -1,6 +1,6 @@
 #### 🚀 Animating an AI-Controlled Robot Arm with Gemini Robotics, SVG, and GSAP
 
-Watch an AI-controlled robot arm in action! The system interprets the scene and your instruction, then plans one or more sequences of shoulder and elbow angle combinations to complete tasks like reaching, grabbing, and manipulating objects, performing multiple actions in sequence. Each trajectory is validated with Zod and animated smoothly using SVG and GSAP.
+Watch an AI-controlled robot arm in action! This app uses Google’s Gemini Robotics-ER 1.5 to control an AI-powered robot arm. The web app interprets user instructions and plans sequences of shoulder and elbow movements to complete tasks such as reaching, grabbing, and manipulating objects. Each trajectory is validated with Zod to ensure accuracy, and the motion is animated smoothly using SVG and GSAP. Users can visualize multiple actions in sequence, interact with the scene, and see the AI’s motion planning in real time. The app highlights how AI can control robotic arms with precise, natural movements while providing an interactive, visually rich experience.
 
 #### 👉 Links & Resources
 
