@@ -1,0 +1,1225 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Robotics Canvas App</title>
+        <link rel="stylesheet" href="styles.css" />
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🤖 Robotics Canvas App</h1>
+                <p>Drag objects and provide instructions to generate AI-powered trajectories</p>
+            </div>
+
+            <div class="content">
+                <div class="canvas-container">
+                    <svg id="svgCanvas" width="1200" height="600" viewBox="0 0 1200 600"></svg>
+                </div>
+
+                <div class="controls">
+                    <div class="control-section">
+                        <h3>📝 Prompt</h3>
+                        <textarea
+                            id="promptInput"
+                            class="prompt-input"
+                            placeholder='Example: "Rotate the yellow circle by 60 degrees"'
+                        ></textarea>
+                        <button id="submitBtn" class="btn">Generate Trajectory</button>
+                        <button id="replayBtn" class="btn btn-secondary" style="display: none">
+                            Replay Animation
+                        </button>
+                        <p class="info-text">Describe the movement you want the AI to plan</p>
+                    </div>
+
+                    <div class="control-section">
+                        <h3>📊 JSON Trajectory</h3>
+                        <div class="trajectory-display">
+                            <pre id="trajectoryJson" class="trajectory-json empty">
+No trajectory generated yet...</pre
+                            >
+                        </div>
+                    </div>
+                </div>
+
+                <div id="loading" class="loading hidden">
+                    <div class="spinner"></div>
+                    <p>Generating trajectory...</p>
+                </div>
+
+                <div id="error" class="error hidden"></div>
+            </div>
+        </div>
+
+        <script>
+            // ============================================================================
+            // Constants & Configuration
+            // ============================================================================
+            const CANVAS_WIDTH = 1200;
+            const CANVAS_HEIGHT = 600;
+            const API_ENDPOINT = '/api/generate-trajectory';
+
+            // ============================================================================
+            // SVG & Object Management
+            // ============================================================================
+            const svgCanvas = document.getElementById('svgCanvas');
+
+            // Object types
+            const SHAPE_TYPES = {
+                CIRCLE: 'circle',
+                RECTANGLE: 'rectangle',
+                TRIANGLE: 'triangle',
+            };
+
+            // Initial objects with different shapes and colors
+            let objects = [
+                {
+                    id: 'circle-1',
+                    type: SHAPE_TYPES.CIRCLE,
+                    x: 150,
+                    y: 150,
+                    color: '#ffeb3b',
+                    radius: 40,
+                },
+                {
+                    id: 'rect-1',
+                    type: SHAPE_TYPES.RECTANGLE,
+                    x: 300,
+                    y: 200,
+                    color: '#f44336',
+                    width: 80,
+                    height: 60,
+                },
+                {
+                    id: 'triangle-1',
+                    type: SHAPE_TYPES.TRIANGLE,
+                    x: 500,
+                    y: 250,
+                    color: '#4caf50',
+                    size: 50,
+                },
+                {
+                    id: 'circle-2',
+                    type: SHAPE_TYPES.CIRCLE,
+                    x: 700,
+                    y: 180,
+                    color: '#2196f3',
+                    radius: 45,
+                },
+                {
+                    id: 'rect-2',
+                    type: SHAPE_TYPES.RECTANGLE,
+                    x: 900,
+                    y: 300,
+                    color: '#9c27b0',
+                    width: 70,
+                    height: 70,
+                },
+                {
+                    id: 'triangle-2',
+                    type: SHAPE_TYPES.TRIANGLE,
+                    x: 400,
+                    y: 400,
+                    color: '#ff9800',
+                    size: 55,
+                },
+                {
+                    id: 'circle-3',
+                    type: SHAPE_TYPES.CIRCLE,
+                    x: 800,
+                    y: 450,
+                    color: '#e91e63',
+                    radius: 35,
+                },
+            ];
+
+            let selectedObject = null;
+            let isDragging = false;
+            let dragOffset = { x: 0, y: 0 };
+            let isAnimating = false;
+            let lastTrajectoryData = null; // Store last trajectory for replay
+
+            // Robot arm state
+            const armState = {
+                baseX: 600,
+                baseY: 300,
+                baseRadius: 45,
+                upperArmLength: 150,
+                upperArmAngle: -Math.PI / 4, // -45 degrees
+                elbowRadius: 15,
+                lowerArmLength: 120,
+                elbowAngle: Math.PI / 3, // 60 degrees
+                gripperOpen: true,
+                gripperWidth: 30,
+            };
+
+            // ============================================================================
+            // SVG Initialization
+            // ============================================================================
+            function initSVG() {
+                // Create defs element for gradients and filters
+                let defs = svgCanvas.querySelector('defs');
+                if (!defs) {
+                    defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+                    svgCanvas.appendChild(defs);
+                }
+
+                // Clear existing defs content
+                defs.innerHTML = '';
+
+                // Create gradients for 3D effects
+                const colors = [
+                    '#ffeb3b',
+                    '#f44336',
+                    '#4caf50',
+                    '#2196f3',
+                    '#9c27b0',
+                    '#ff9800',
+                    '#e91e63',
+                ];
+
+                colors.forEach((color, index) => {
+                    // Radial gradient for circles
+                    const radialGrad = document.createElementNS(
+                        'http://www.w3.org/2000/svg',
+                        'radialGradient'
+                    );
+                    radialGrad.setAttribute('id', `gradCircle${index}`);
+                    radialGrad.setAttribute('cx', '30%');
+                    radialGrad.setAttribute('cy', '30%');
+                    radialGrad.setAttribute('r', '70%');
+
+                    const stop1 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+                    stop1.setAttribute('offset', '0%');
+                    stop1.setAttribute('stop-color', lightenColor(color, 30));
+                    radialGrad.appendChild(stop1);
+
+                    const stop2 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+                    stop2.setAttribute('offset', '100%');
+                    stop2.setAttribute('stop-color', darkenColor(color, 20));
+                    radialGrad.appendChild(stop2);
+
+                    defs.appendChild(radialGrad);
+
+                    // Linear gradient for rectangles
+                    const linearGrad = document.createElementNS(
+                        'http://www.w3.org/2000/svg',
+                        'linearGradient'
+                    );
+                    linearGrad.setAttribute('id', `gradRect${index}`);
+                    linearGrad.setAttribute('x1', '0%');
+                    linearGrad.setAttribute('y1', '0%');
+                    linearGrad.setAttribute('x2', '0%');
+                    linearGrad.setAttribute('y2', '100%');
+
+                    const stop3 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+                    stop3.setAttribute('offset', '0%');
+                    stop3.setAttribute('stop-color', lightenColor(color, 25));
+                    linearGrad.appendChild(stop3);
+
+                    const stop4 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+                    stop4.setAttribute('offset', '100%');
+                    stop4.setAttribute('stop-color', darkenColor(color, 25));
+                    linearGrad.appendChild(stop4);
+
+                    defs.appendChild(linearGrad);
+                });
+
+                // Drop shadow filter
+                const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter');
+                filter.setAttribute('id', 'dropShadow');
+                filter.setAttribute('x', '-50%');
+                filter.setAttribute('y', '-50%');
+                filter.setAttribute('width', '200%');
+                filter.setAttribute('height', '200%');
+
+                const feGaussianBlur = document.createElementNS(
+                    'http://www.w3.org/2000/svg',
+                    'feGaussianBlur'
+                );
+                feGaussianBlur.setAttribute('in', 'SourceAlpha');
+                feGaussianBlur.setAttribute('stdDeviation', '3');
+                filter.appendChild(feGaussianBlur);
+
+                const feOffset = document.createElementNS('http://www.w3.org/2000/svg', 'feOffset');
+                feOffset.setAttribute('dx', '2');
+                feOffset.setAttribute('dy', '2');
+                feOffset.setAttribute('result', 'offsetblur');
+                filter.appendChild(feOffset);
+
+                const feComponentTransfer = document.createElementNS(
+                    'http://www.w3.org/2000/svg',
+                    'feComponentTransfer'
+                );
+                feComponentTransfer.setAttribute('in', 'offsetblur');
+                const feFuncA = document.createElementNS('http://www.w3.org/2000/svg', 'feFuncA');
+                feFuncA.setAttribute('type', 'linear');
+                feFuncA.setAttribute('slope', '0.3');
+                feComponentTransfer.appendChild(feFuncA);
+                filter.appendChild(feComponentTransfer);
+
+                const feMerge = document.createElementNS('http://www.w3.org/2000/svg', 'feMerge');
+                const feMergeNode1 = document.createElementNS(
+                    'http://www.w3.org/2000/svg',
+                    'feMergeNode'
+                );
+                feMerge.appendChild(feMergeNode1);
+                const feMergeNode2 = document.createElementNS(
+                    'http://www.w3.org/2000/svg',
+                    'feMergeNode'
+                );
+                feMergeNode2.setAttribute('in', 'SourceGraphic');
+                feMerge.appendChild(feMergeNode2);
+                filter.appendChild(feMerge);
+
+                defs.appendChild(filter);
+
+                // Robot arm gradients
+                const armGrad = document.createElementNS(
+                    'http://www.w3.org/2000/svg',
+                    'linearGradient'
+                );
+                armGrad.setAttribute('id', 'armGradient');
+                armGrad.setAttribute('x1', '0%');
+                armGrad.setAttribute('y1', '0%');
+                armGrad.setAttribute('x2', '100%');
+                armGrad.setAttribute('y2', '0%');
+
+                const stop5 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+                stop5.setAttribute('offset', '0%');
+                stop5.setAttribute('stop-color', '#e0e0e0');
+                armGrad.appendChild(stop5);
+
+                const stop6 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+                stop6.setAttribute('offset', '50%');
+                stop6.setAttribute('stop-color', '#b0b0b0');
+                armGrad.appendChild(stop6);
+
+                const stop7 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+                stop7.setAttribute('offset', '100%');
+                stop7.setAttribute('stop-color', '#e0e0e0');
+                armGrad.appendChild(stop7);
+
+                defs.appendChild(armGrad);
+
+                // Base hemisphere gradient
+                const baseGrad = document.createElementNS(
+                    'http://www.w3.org/2000/svg',
+                    'radialGradient'
+                );
+                baseGrad.setAttribute('id', 'baseGradient');
+                baseGrad.setAttribute('cx', '50%');
+                baseGrad.setAttribute('cy', '30%');
+                baseGrad.setAttribute('r', '70%');
+
+                const stop8 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+                stop8.setAttribute('offset', '0%');
+                stop8.setAttribute('stop-color', '#f0f0f0');
+                baseGrad.appendChild(stop8);
+
+                const stop9 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+                stop9.setAttribute('offset', '100%');
+                stop9.setAttribute('stop-color', '#808080');
+                baseGrad.appendChild(stop9);
+
+                defs.appendChild(baseGrad);
+            }
+
+            // Helper functions for color manipulation
+            function lightenColor(color, percent) {
+                const num = parseInt(color.replace('#', ''), 16);
+                const r = Math.min(255, (num >> 16) + percent * 2.55);
+                const g = Math.min(255, ((num >> 8) & 0x00ff) + percent * 2.55);
+                const b = Math.min(255, (num & 0x0000ff) + percent * 2.55);
+                return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
+            }
+
+            function darkenColor(color, percent) {
+                const num = parseInt(color.replace('#', ''), 16);
+                const r = Math.max(0, (num >> 16) - percent * 2.55);
+                const g = Math.max(0, ((num >> 8) & 0x00ff) - percent * 2.55);
+                const b = Math.max(0, (num & 0x0000ff) - percent * 2.55);
+                return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
+            }
+
+            function getGradientId(color, shapeType) {
+                const colors = [
+                    '#ffeb3b',
+                    '#f44336',
+                    '#4caf50',
+                    '#2196f3',
+                    '#9c27b0',
+                    '#ff9800',
+                    '#e91e63',
+                ];
+                const index = colors.indexOf(color.toLowerCase());
+                if (index === -1) {
+                    // Fallback: create gradient on the fly or use solid color
+                    return null;
+                }
+                return shapeType === SHAPE_TYPES.CIRCLE ? `gradCircle${index}` : `gradRect${index}`;
+            }
+
+            // ============================================================================
+            // Drawing Functions
+            // ============================================================================
+            function drawCircle(x, y, radius, color, objId) {
+                const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                circle.setAttribute('cx', x);
+                circle.setAttribute('cy', y);
+                circle.setAttribute('r', radius);
+                const gradId = getGradientId(color, SHAPE_TYPES.CIRCLE);
+                circle.setAttribute('fill', gradId ? `url(#${gradId})` : color);
+                circle.setAttribute('stroke', '#333');
+                circle.setAttribute('stroke-width', '2');
+                circle.setAttribute('filter', 'url(#dropShadow)');
+                circle.setAttribute('data-obj-id', objId);
+                circle.setAttribute('class', 'draggable-object');
+                return circle;
+            }
+
+            function drawRectangle(x, y, width, height, color, objId) {
+                const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                rect.setAttribute('x', x - width / 2);
+                rect.setAttribute('y', y - height / 2);
+                rect.setAttribute('width', width);
+                rect.setAttribute('height', height);
+                const gradId = getGradientId(color, SHAPE_TYPES.RECTANGLE);
+                rect.setAttribute('fill', gradId ? `url(#${gradId})` : color);
+                rect.setAttribute('stroke', '#333');
+                rect.setAttribute('stroke-width', '2');
+                rect.setAttribute('filter', 'url(#dropShadow)');
+                rect.setAttribute('data-obj-id', objId);
+                rect.setAttribute('class', 'draggable-object');
+                return rect;
+            }
+
+            function drawTriangle(x, y, size, color, objId) {
+                const polygon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+                const points = `${x},${y - size} ${x - size},${y + size} ${x + size},${y + size}`;
+                polygon.setAttribute('points', points);
+                const gradId = getGradientId(color, SHAPE_TYPES.RECTANGLE);
+                polygon.setAttribute('fill', gradId ? `url(#${gradId})` : color);
+                polygon.setAttribute('stroke', '#333');
+                polygon.setAttribute('stroke-width', '2');
+                polygon.setAttribute('filter', 'url(#dropShadow)');
+                polygon.setAttribute('data-obj-id', objId);
+                polygon.setAttribute('class', 'draggable-object');
+                return polygon;
+            }
+
+            function drawObject(obj) {
+                let element;
+                switch (obj.type) {
+                    case SHAPE_TYPES.CIRCLE:
+                        element = drawCircle(obj.x, obj.y, obj.radius, obj.color, obj.id);
+                        break;
+                    case SHAPE_TYPES.RECTANGLE:
+                        element = drawRectangle(
+                            obj.x,
+                            obj.y,
+                            obj.width,
+                            obj.height,
+                            obj.color,
+                            obj.id
+                        );
+                        break;
+                    case SHAPE_TYPES.TRIANGLE:
+                        element = drawTriangle(obj.x, obj.y, obj.size, obj.color, obj.id);
+                        break;
+                }
+                if (element) {
+                    svgCanvas.appendChild(element);
+                }
+                return element;
+            }
+
+            function redrawSVG() {
+                // Clear all existing objects (keep defs and background)
+                const existingObjects = svgCanvas.querySelectorAll('.draggable-object, .robot-arm');
+                existingObjects.forEach((el) => el.remove());
+
+                // Draw all objects
+                objects.forEach((obj) => {
+                    drawObject(obj);
+                });
+
+                // Draw robot arm
+                drawRobotArm();
+            }
+
+            // ============================================================================
+            // Robot Arm Drawing Functions
+            // ============================================================================
+            function calculateArmPosition(state) {
+                const upperArmEndX =
+                    state.baseX + state.upperArmLength * Math.cos(state.upperArmAngle);
+                const upperArmEndY =
+                    state.baseY + state.upperArmLength * Math.sin(state.upperArmAngle);
+
+                const totalAngle = state.upperArmAngle + state.elbowAngle;
+                const gripperX = upperArmEndX + state.lowerArmLength * Math.cos(totalAngle);
+                const gripperY = upperArmEndY + state.lowerArmLength * Math.sin(totalAngle);
+
+                return {
+                    upperArmEnd: { x: upperArmEndX, y: upperArmEndY },
+                    gripper: { x: gripperX, y: gripperY },
+                };
+            }
+
+            // ============================================================================
+            // Trajectory Step Conversion Functions
+            // ============================================================================
+            function stepToArmState(step) {
+                return {
+                    upperArmAngle: (step.angles.shoulder * Math.PI) / 180,
+                    elbowAngle: (step.angles.elbow * Math.PI) / 180,
+                    gripperOpen: step.gripper === 'open',
+                };
+            }
+
+            function calculateGripperPositionFromAngles(shoulderDeg, elbowDeg) {
+                const shoulderRad = (shoulderDeg * Math.PI) / 180;
+                const elbowRad = (elbowDeg * Math.PI) / 180;
+
+                const upperArmEndX =
+                    armState.baseX + armState.upperArmLength * Math.cos(shoulderRad);
+                const upperArmEndY =
+                    armState.baseY + armState.upperArmLength * Math.sin(shoulderRad);
+
+                const totalAngle = shoulderRad + elbowRad;
+                const gripperX = upperArmEndX + armState.lowerArmLength * Math.cos(totalAngle);
+                const gripperY = upperArmEndY + armState.lowerArmLength * Math.sin(totalAngle);
+
+                return { x: gripperX, y: gripperY };
+            }
+
+            function validateStep(step) {
+                const calculatedPos = calculateGripperPositionFromAngles(
+                    step.angles.shoulder,
+                    step.angles.elbow
+                );
+                const distance = Math.sqrt(
+                    Math.pow(calculatedPos.x - step.target_coords.x, 2) +
+                        Math.pow(calculatedPos.y - step.target_coords.y, 2)
+                );
+                // Allow 5px tolerance for floating point errors
+                return distance <= 5;
+            }
+
+            function drawHemisphereBase(x, y, radius) {
+                const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                group.setAttribute('class', 'robot-arm');
+
+                // Draw hemisphere (half circle on top)
+                const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                const d = `M ${x - radius} ${y} A ${radius} ${radius} 0 0 1 ${x + radius} ${y}`;
+                path.setAttribute('d', d);
+                path.setAttribute('fill', 'url(#baseGradient)');
+                path.setAttribute('stroke', '#333');
+                path.setAttribute('stroke-width', '2');
+                path.setAttribute('filter', 'url(#dropShadow)');
+                group.appendChild(path);
+
+                // Draw base circle outline
+                const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                circle.setAttribute('cx', x);
+                circle.setAttribute('cy', y);
+                circle.setAttribute('r', radius);
+                circle.setAttribute('fill', 'none');
+                circle.setAttribute('stroke', '#333');
+                circle.setAttribute('stroke-width', '2');
+                group.appendChild(circle);
+
+                return group;
+            }
+
+            function drawArmSegment(startX, startY, endX, endY, width, angle) {
+                const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                group.setAttribute('class', 'robot-arm');
+
+                const length = Math.sqrt((endX - startX) ** 2 + (endY - startY) ** 2);
+                const centerX = (startX + endX) / 2;
+                const centerY = (startY + endY) / 2;
+
+                const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                rect.setAttribute('x', -length / 2);
+                rect.setAttribute('y', -width / 2);
+                rect.setAttribute('width', length);
+                rect.setAttribute('height', width);
+                rect.setAttribute('fill', 'url(#armGradient)');
+                rect.setAttribute('stroke', '#333');
+                rect.setAttribute('stroke-width', '2');
+                rect.setAttribute('filter', 'url(#dropShadow)');
+
+                group.setAttribute(
+                    'transform',
+                    `translate(${centerX}, ${centerY}) rotate(${(angle * 180) / Math.PI})`
+                );
+                group.appendChild(rect);
+
+                return group;
+            }
+
+            function drawElbowJoint(x, y, radius) {
+                const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                group.setAttribute('class', 'robot-arm');
+
+                const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                circle.setAttribute('cx', x);
+                circle.setAttribute('cy', y);
+                circle.setAttribute('r', radius);
+                circle.setAttribute('fill', '#888');
+                circle.setAttribute('stroke', '#333');
+                circle.setAttribute('stroke-width', '2');
+                circle.setAttribute('filter', 'url(#dropShadow)');
+                group.appendChild(circle);
+
+                // Inner circle for depth
+                const innerCircle = document.createElementNS(
+                    'http://www.w3.org/2000/svg',
+                    'circle'
+                );
+                innerCircle.setAttribute('cx', x);
+                innerCircle.setAttribute('cy', y);
+                innerCircle.setAttribute('r', radius * 0.6);
+                innerCircle.setAttribute('fill', '#aaa');
+                group.appendChild(innerCircle);
+
+                return group;
+            }
+
+            function drawGripper(x, y, angle, open, width) {
+                const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                group.setAttribute('class', 'robot-arm');
+                group.setAttribute(
+                    'transform',
+                    `translate(${x}, ${y}) rotate(${(angle * 180) / Math.PI})`
+                );
+
+                const fingerWidth = 8;
+                const fingerLength = 20;
+                const openAmount = open ? 15 : 5;
+
+                // Left finger
+                const leftFinger = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                leftFinger.setAttribute('x', -width / 2 - fingerLength);
+                leftFinger.setAttribute('y', -fingerWidth / 2 - openAmount);
+                leftFinger.setAttribute('width', fingerLength);
+                leftFinger.setAttribute('height', fingerWidth);
+                leftFinger.setAttribute('fill', '#666');
+                leftFinger.setAttribute('stroke', '#333');
+                leftFinger.setAttribute('stroke-width', '1');
+                group.appendChild(leftFinger);
+
+                // Right finger
+                const rightFinger = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                rightFinger.setAttribute('x', width / 2);
+                rightFinger.setAttribute('y', -fingerWidth / 2 + openAmount);
+                rightFinger.setAttribute('width', fingerLength);
+                rightFinger.setAttribute('height', fingerWidth);
+                rightFinger.setAttribute('fill', '#666');
+                rightFinger.setAttribute('stroke', '#333');
+                rightFinger.setAttribute('stroke-width', '1');
+                group.appendChild(rightFinger);
+
+                // Gripper base
+                const base = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                base.setAttribute('x', -width / 2);
+                base.setAttribute('y', -fingerWidth);
+                base.setAttribute('width', width);
+                base.setAttribute('height', fingerWidth * 2);
+                base.setAttribute('fill', '#777');
+                base.setAttribute('stroke', '#333');
+                base.setAttribute('stroke-width', '2');
+                group.appendChild(base);
+
+                return group;
+            }
+
+            function drawRobotArm() {
+                const positions = calculateArmPosition(armState);
+
+                // Draw base
+                const base = drawHemisphereBase(
+                    armState.baseX,
+                    armState.baseY,
+                    armState.baseRadius
+                );
+                svgCanvas.appendChild(base);
+
+                // Draw upper arm
+                const upperArm = drawArmSegment(
+                    armState.baseX,
+                    armState.baseY,
+                    positions.upperArmEnd.x,
+                    positions.upperArmEnd.y,
+                    20,
+                    armState.upperArmAngle
+                );
+                svgCanvas.appendChild(upperArm);
+
+                // Draw elbow joint
+                const elbow = drawElbowJoint(
+                    positions.upperArmEnd.x,
+                    positions.upperArmEnd.y,
+                    armState.elbowRadius
+                );
+                svgCanvas.appendChild(elbow);
+
+                // Draw lower arm
+                const totalAngle = armState.upperArmAngle + armState.elbowAngle;
+                const lowerArm = drawArmSegment(
+                    positions.upperArmEnd.x,
+                    positions.upperArmEnd.y,
+                    positions.gripper.x,
+                    positions.gripper.y,
+                    18,
+                    totalAngle
+                );
+                svgCanvas.appendChild(lowerArm);
+
+                // Draw gripper
+                const gripper = drawGripper(
+                    positions.gripper.x,
+                    positions.gripper.y,
+                    totalAngle,
+                    armState.gripperOpen,
+                    armState.gripperWidth
+                );
+                svgCanvas.appendChild(gripper);
+            }
+
+            // ============================================================================
+            // Hit Detection
+            // ============================================================================
+            function isPointInObject(x, y, obj) {
+                switch (obj.type) {
+                    case SHAPE_TYPES.CIRCLE:
+                        const dx = x - obj.x;
+                        const dy = y - obj.y;
+                        return dx * dx + dy * dy <= obj.radius * obj.radius;
+                    case SHAPE_TYPES.RECTANGLE:
+                        return (
+                            x >= obj.x - obj.width / 2 &&
+                            x <= obj.x + obj.width / 2 &&
+                            y >= obj.y - obj.height / 2 &&
+                            y <= obj.y + obj.height / 2
+                        );
+                    case SHAPE_TYPES.TRIANGLE:
+                        // Simple triangle hit test (bounded box approximation)
+                        return (
+                            x >= obj.x - obj.size &&
+                            x <= obj.x + obj.size &&
+                            y >= obj.y - obj.size &&
+                            y <= obj.y + obj.size
+                        );
+                    default:
+                        return false;
+                }
+            }
+
+            function getObjectAtPoint(x, y) {
+                // Use SVG elementFromPoint for more accurate detection
+                const point = svgCanvas.createSVGPoint();
+                point.x = x;
+                point.y = y;
+
+                // Check all draggable objects
+                const elements = svgCanvas.querySelectorAll('.draggable-object');
+                for (let i = elements.length - 1; i >= 0; i--) {
+                    const element = elements[i];
+                    const objId = element.getAttribute('data-obj-id');
+                    const obj = objects.find((o) => o.id === objId);
+                    if (obj && isPointInObject(x, y, obj)) {
+                        return obj;
+                    }
+                }
+                return null;
+            }
+
+            // ============================================================================
+            // Drag and Drop
+            // ============================================================================
+            function handleMouseDown(e) {
+                if (isAnimating) return;
+
+                const rect = svgCanvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+
+                const obj = getObjectAtPoint(x, y);
+                if (obj) {
+                    selectedObject = obj;
+                    isDragging = true;
+                    dragOffset.x = x - obj.x;
+                    dragOffset.y = y - obj.y;
+
+                    // Move object to end of array (bring to front)
+                    const index = objects.indexOf(obj);
+                    objects.splice(index, 1);
+                    objects.push(obj);
+
+                    svgCanvas.style.cursor = 'grabbing';
+                }
+            }
+
+            function handleMouseMove(e) {
+                if (isDragging && selectedObject) {
+                    const rect = svgCanvas.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+
+                    let newX = x - dragOffset.x;
+                    let newY = y - dragOffset.y;
+
+                    // Calculate bounds based on object type and size to keep object fully visible
+                    let minX = 0;
+                    let minY = 0;
+                    let maxX = CANVAS_WIDTH;
+                    let maxY = CANVAS_HEIGHT;
+
+                    if (selectedObject.type === SHAPE_TYPES.CIRCLE) {
+                        minX = selectedObject.radius;
+                        minY = selectedObject.radius;
+                        maxX = CANVAS_WIDTH - selectedObject.radius;
+                        maxY = CANVAS_HEIGHT - selectedObject.radius;
+                    } else if (selectedObject.type === SHAPE_TYPES.RECTANGLE) {
+                        minX = selectedObject.width / 2;
+                        minY = selectedObject.height / 2;
+                        maxX = CANVAS_WIDTH - selectedObject.width / 2;
+                        maxY = CANVAS_HEIGHT - selectedObject.height / 2;
+                    } else if (selectedObject.type === SHAPE_TYPES.TRIANGLE) {
+                        minX = selectedObject.size;
+                        minY = selectedObject.size;
+                        maxX = CANVAS_WIDTH - selectedObject.size;
+                        maxY = CANVAS_HEIGHT - selectedObject.size;
+                    }
+
+                    // Clamp position to keep object fully within canvas
+                    newX = Math.max(minX, Math.min(maxX, newX));
+                    newY = Math.max(minY, Math.min(maxY, newY));
+
+                    // Update object position
+                    selectedObject.x = newX;
+                    selectedObject.y = newY;
+                    redrawSVG();
+                } else {
+                    const rect = svgCanvas.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+                    const obj = getObjectAtPoint(x, y);
+                    svgCanvas.style.cursor = obj ? 'grab' : 'default';
+                }
+            }
+
+            function handleMouseUp() {
+                if (isDragging) {
+                    isDragging = false;
+                    selectedObject = null;
+                    svgCanvas.style.cursor = 'default';
+                }
+            }
+
+            // ============================================================================
+            // SVG to Base64 (with scaling to reduce token usage)
+            // ============================================================================
+            function svgToBase64(maxWidth = 512, maxHeight = 384, quality = 0.8) {
+                return new Promise((resolve) => {
+                    // Clone the SVG to avoid modifying the original
+                    const clonedSvg = svgCanvas.cloneNode(true);
+
+                    // Set viewBox to ensure proper scaling
+                    clonedSvg.setAttribute('viewBox', `0 0 ${CANVAS_WIDTH} ${CANVAS_HEIGHT}`);
+
+                    // Serialize SVG to string
+                    const svgString = new XMLSerializer().serializeToString(clonedSvg);
+                    const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+                    const url = URL.createObjectURL(svgBlob);
+
+                    // Create an image to load the SVG
+                    const img = new Image();
+                    img.onload = function () {
+                        // Create a temporary canvas with smaller dimensions
+                        const scale = Math.min(
+                            maxWidth / CANVAS_WIDTH,
+                            maxHeight / CANVAS_HEIGHT,
+                            1
+                        );
+                        const tempCanvas = document.createElement('canvas');
+                        tempCanvas.width = CANVAS_WIDTH * scale;
+                        tempCanvas.height = CANVAS_HEIGHT * scale;
+
+                        const tempCtx = tempCanvas.getContext('2d');
+                        tempCtx.drawImage(img, 0, 0, tempCanvas.width, tempCanvas.height);
+
+                        // Convert to base64 with JPEG compression
+                        const dataUrl = tempCanvas.toDataURL('image/jpeg', quality);
+                        URL.revokeObjectURL(url);
+                        resolve(dataUrl);
+                    };
+                    img.onerror = function () {
+                        // Fallback: try direct SVG data URL
+                        const svgDataUrl =
+                            'data:image/svg+xml;base64,' +
+                            btoa(unescape(encodeURIComponent(svgString)));
+                        URL.revokeObjectURL(url);
+                        resolve(svgDataUrl);
+                    };
+                    img.src = url;
+                });
+            }
+
+            // ============================================================================
+            // Robot Arm Trajectory Animation
+            // ============================================================================
+            function findObjectNearGripper(gripperX, gripperY, threshold = 30) {
+                for (const obj of objects) {
+                    let distance;
+                    if (obj.type === SHAPE_TYPES.CIRCLE) {
+                        distance = Math.sqrt(
+                            Math.pow(gripperX - obj.x, 2) + Math.pow(gripperY - obj.y, 2)
+                        );
+                        if (distance < obj.radius + threshold) {
+                            return obj;
+                        }
+                    } else if (obj.type === SHAPE_TYPES.RECTANGLE) {
+                        const closestX = Math.max(
+                            obj.x - obj.width / 2,
+                            Math.min(gripperX, obj.x + obj.width / 2)
+                        );
+                        const closestY = Math.max(
+                            obj.y - obj.height / 2,
+                            Math.min(gripperY, obj.y + obj.height / 2)
+                        );
+                        distance = Math.sqrt(
+                            Math.pow(gripperX - closestX, 2) + Math.pow(gripperY - closestY, 2)
+                        );
+                        if (distance < threshold) {
+                            return obj;
+                        }
+                    } else if (obj.type === SHAPE_TYPES.TRIANGLE) {
+                        const closestX = Math.max(
+                            obj.x - obj.size,
+                            Math.min(gripperX, obj.x + obj.size)
+                        );
+                        const closestY = Math.max(
+                            obj.y - obj.size,
+                            Math.min(gripperY, obj.y + obj.size)
+                        );
+                        distance = Math.sqrt(
+                            Math.pow(gripperX - closestX, 2) + Math.pow(gripperY - closestY, 2)
+                        );
+                        if (distance < threshold) {
+                            return obj;
+                        }
+                    }
+                }
+                return null;
+            }
+
+            function animateRobotArmTrajectory(trajectorySteps) {
+                if (isAnimating) {
+                    return;
+                }
+
+                if (!trajectorySteps || trajectorySteps.length === 0) {
+                    showError('Trajectory is empty');
+                    return;
+                }
+
+                isAnimating = true;
+
+                // Store initial arm state for replay
+                const initialArmState = {
+                    upperArmAngle: armState.upperArmAngle,
+                    elbowAngle: armState.elbowAngle,
+                    gripperOpen: armState.gripperOpen,
+                };
+
+                // Track picked up object
+                let pickedObject = null;
+                let objectOffset = { x: 0, y: 0 };
+                let previousGripperState = armState.gripperOpen;
+
+                // Create GSAP timeline
+                const tl = gsap.timeline({
+                    onComplete: () => {
+                        isAnimating = false;
+                        redrawSVG();
+
+                        // Show replay button when animation completes
+                        if (elements.replayBtn && lastTrajectoryData) {
+                            elements.replayBtn.style.display = 'inline-block';
+                            elements.promptInput.value = '';
+                            updateSubmitButtonState();
+                        }
+                    },
+                });
+
+                // Add each trajectory step to the timeline
+                trajectorySteps.forEach((step, index) => {
+                    const targetState = stepToArmState(step);
+
+                    // Animate arm angles
+                    tl.to(
+                        armState,
+                        {
+                            upperArmAngle: targetState.upperArmAngle,
+                            elbowAngle: targetState.elbowAngle,
+                            duration: step.duration,
+                            ease: 'power1.inOut',
+                            onStart: () => {
+                                // Update gripper state at start of step
+                                armState.gripperOpen = targetState.gripperOpen;
+
+                                // Calculate gripper position for this step
+                                const tempState = {
+                                    ...armState,
+                                    upperArmAngle: targetState.upperArmAngle,
+                                    elbowAngle: targetState.elbowAngle,
+                                };
+                                const positions = calculateArmPosition(tempState);
+
+                                // Handle object pickup: when gripper closes
+                                if (
+                                    previousGripperState &&
+                                    !targetState.gripperOpen &&
+                                    !pickedObject
+                                ) {
+                                    const nearbyObj = findObjectNearGripper(
+                                        positions.gripper.x,
+                                        positions.gripper.y,
+                                        40
+                                    );
+                                    if (nearbyObj) {
+                                        pickedObject = nearbyObj;
+                                        objectOffset.x = nearbyObj.x - positions.gripper.x;
+                                        objectOffset.y = nearbyObj.y - positions.gripper.y;
+                                    }
+                                }
+
+                                // Handle object release: when gripper opens
+                                if (
+                                    !previousGripperState &&
+                                    targetState.gripperOpen &&
+                                    pickedObject
+                                ) {
+                                    pickedObject.x = positions.gripper.x + objectOffset.x;
+                                    pickedObject.y = positions.gripper.y + objectOffset.y;
+                                    pickedObject = null;
+                                }
+
+                                previousGripperState = targetState.gripperOpen;
+                            },
+                            onUpdate: () => {
+                                // Update object position if picked up
+                                if (pickedObject && !armState.gripperOpen) {
+                                    const positions = calculateArmPosition(armState);
+                                    pickedObject.x = positions.gripper.x + objectOffset.x;
+                                    pickedObject.y = positions.gripper.y + objectOffset.y;
+                                }
+                                redrawSVG();
+                            },
+                        },
+                        index === 0 ? 0 : undefined
+                    );
+                });
+
+                // Start the timeline
+                redrawSVG();
+            }
+
+            // ============================================================================
+            // API Integration
+            // ============================================================================
+            const elements = {
+                promptInput: document.getElementById('promptInput'),
+                submitBtn: document.getElementById('submitBtn'),
+                replayBtn: document.getElementById('replayBtn'),
+                trajectoryJson: document.getElementById('trajectoryJson'),
+                loadingDiv: document.getElementById('loading'),
+                errorDiv: document.getElementById('error'),
+            };
+
+            function showError(message) {
+                elements.errorDiv.textContent = message;
+                elements.errorDiv.classList.remove('hidden');
+            }
+
+            function hideError() {
+                elements.errorDiv.classList.add('hidden');
+            }
+
+            function showLoading() {
+                elements.loadingDiv.classList.remove('hidden');
+                elements.submitBtn.disabled = true;
+            }
+
+            function hideLoading() {
+                elements.loadingDiv.classList.add('hidden');
+                updateSubmitButtonState();
+            }
+
+            function updateSubmitButtonState() {
+                const hasPrompt = elements.promptInput.value.trim().length > 0;
+                elements.submitBtn.disabled = !hasPrompt;
+            }
+
+            async function generateTrajectory() {
+                const prompt = elements.promptInput.value.trim();
+
+                if (!prompt) {
+                    showError('Please enter a prompt');
+                    return;
+                }
+
+                if (isAnimating) {
+                    showError('Please wait for the current animation to finish');
+                    return;
+                }
+
+                // Clear previous trajectory JSON
+                elements.trajectoryJson.textContent = 'No trajectory generated yet...';
+                elements.trajectoryJson.classList.add('empty');
+
+                // Hide replay button when generating new trajectory
+                if (elements.replayBtn) {
+                    elements.replayBtn.style.display = 'none';
+                }
+
+                hideError();
+                showLoading();
+
+                try {
+                    // Capture SVG as base64
+                    const canvasImage = await svgToBase64();
+
+                    // Send to API
+                    const response = await fetch(API_ENDPOINT, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            image: canvasImage,
+                            prompt: prompt,
+                        }),
+                    });
+
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(data.error || 'Failed to generate trajectory');
+                    }
+
+                    // Display JSON trajectory
+                    elements.trajectoryJson.textContent = JSON.stringify(data, null, 2);
+                    elements.trajectoryJson.classList.remove('empty');
+
+                    // Animate the robot arm trajectory
+                    if (data.trajectory && data.trajectory.length > 0) {
+                        // Validate trajectory steps
+                        const invalidSteps = data.trajectory.filter((step) => !validateStep(step));
+                        if (invalidSteps.length > 0) {
+                            console.warn(
+                                `${invalidSteps.length} trajectory steps have mismatched target_coords`
+                            );
+                        }
+
+                        // Store initial arm state and object positions for replay
+                        const initialObjectPositions = objects.map((obj) => ({
+                            id: obj.id,
+                            x: obj.x,
+                            y: obj.y,
+                        }));
+
+                        lastTrajectoryData = {
+                            trajectory: data.trajectory,
+                            initialArmState: {
+                                upperArmAngle: armState.upperArmAngle,
+                                elbowAngle: armState.elbowAngle,
+                                gripperOpen: armState.gripperOpen,
+                            },
+                            initialObjectPositions: initialObjectPositions,
+                        };
+
+                        // Hide replay button when starting new animation
+                        if (elements.replayBtn) {
+                            elements.replayBtn.style.display = 'none';
+                        }
+
+                        animateRobotArmTrajectory(data.trajectory);
+                    } else {
+                        showError('Trajectory is empty');
+                    }
+                } catch (error) {
+                    showError(error.message || 'An error occurred while generating trajectory');
+                } finally {
+                    hideLoading();
+                }
+            }
+
+            // ============================================================================
+            // Event Listeners
+            // ============================================================================
+            elements.submitBtn.addEventListener('click', generateTrajectory);
+
+            // Replay button handler
+            elements.replayBtn.addEventListener('click', () => {
+                if (lastTrajectoryData && !isAnimating) {
+                    // Reset arm to initial state instantly (no animation)
+                    if (lastTrajectoryData.initialArmState) {
+                        armState.upperArmAngle = lastTrajectoryData.initialArmState.upperArmAngle;
+                        armState.elbowAngle = lastTrajectoryData.initialArmState.elbowAngle;
+                        armState.gripperOpen = lastTrajectoryData.initialArmState.gripperOpen;
+                    }
+
+                    // Reset objects to initial positions
+                    if (lastTrajectoryData.initialObjectPositions) {
+                        lastTrajectoryData.initialObjectPositions.forEach((initialPos) => {
+                            const obj = objects.find((o) => o.id === initialPos.id);
+                            if (obj) {
+                                obj.x = initialPos.x;
+                                obj.y = initialPos.y;
+                            }
+                        });
+                    }
+
+                    redrawSVG();
+
+                    // Hide replay button during animation
+                    elements.replayBtn.style.display = 'none';
+
+                    // Replay the last trajectory
+                    animateRobotArmTrajectory(lastTrajectoryData.trajectory);
+                }
+            });
+
+            elements.promptInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && e.ctrlKey) {
+                    generateTrajectory();
+                }
+            });
+
+            // Update button state when prompt changes
+            elements.promptInput.addEventListener('input', updateSubmitButtonState);
+
+            // Initialize button state on page load
+            updateSubmitButtonState();
+
+            svgCanvas.addEventListener('mousedown', handleMouseDown);
+            svgCanvas.addEventListener('mousemove', handleMouseMove);
+            svgCanvas.addEventListener('mouseup', handleMouseUp);
+            svgCanvas.addEventListener('mouseleave', handleMouseUp);
+
+            // ============================================================================
+            // Initialization
+            // ============================================================================
+            initSVG();
+            redrawSVG();
+        </script>
+    </body>
+</html>
